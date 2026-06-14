@@ -18,7 +18,69 @@ Usage (once implemented):
     print(result["error"])   # None on success
 """
 
+import re
+
 from tools import search_listings, suggest_outfit, create_fit_card
+
+
+# ── query parsing ─────────────────────────────────────────────────────────────
+
+_PRICE_UNDER = re.compile(r"(?:under|below|less than|<)\s*\$?\s*(\d+(?:\.\d{1,2})?)", re.I)
+_PRICE_BARE = re.compile(r"\$\s*(\d+(?:\.\d{1,2})?)")
+_SIZE = re.compile(r"\bsize\s+([A-Za-z0-9]+)", re.I)
+_ARTICLES = re.compile(r"\b(?:a|an|the)\b", re.I)
+_WEAR_CLAUSE = re.compile(
+    r"\bi\s+(?:mostly\s+|usually\s+|normally\s+|often\s+|typically\s+)?wear\b[^.]*", re.I
+)
+_FILLER = re.compile(
+    r"\b(i'?m\s+looking\s+for|looking\s+for|i\s+want|i\s+need|show\s+me|find\s+me|"
+    r"what'?s\s+out\s+there|how\s+would\s+i\s+style\s+it)\b",
+    re.I,
+)
+
+
+def _parse_query(query: str) -> dict:
+    """
+    Pull description / size / max_price out of a natural-language query with
+    simple regex rules (no LLM).
+
+    - max_price: a number after "under"/"below"/"less than"/"<"/"$", else None.
+    - size:      the token after the word "size" (M, XS, 8, ...), else None.
+    - description: the query with the price phrase, size phrase, wardrobe-context
+      "I wear ..." clause, and filler removed; falls back to the raw query if
+      stripping leaves it empty.
+    """
+    text = query or ""
+
+    max_price = None
+    m = _PRICE_UNDER.search(text) or _PRICE_BARE.search(text)
+    if m:
+        try:
+            max_price = float(m.group(1))
+        except ValueError:
+            max_price = None
+
+    size_match = _SIZE.search(text)
+    size = size_match.group(1) if size_match else None
+
+    desc = text
+    for pattern in (_PRICE_UNDER, _PRICE_BARE, _SIZE, _WEAR_CLAUSE, _FILLER, _ARTICLES):
+        desc = pattern.sub(" ", desc)
+    desc = re.sub(r"\$", " ", desc)
+    desc = re.sub(r"\s+", " ", desc).strip(" .,!?")
+    if not desc:
+        desc = text.strip()
+
+    return {"description": desc, "size": size, "max_price": max_price}
+
+
+def _format_price(price) -> str:
+    """Render a price as $5 or $29.99 for messages."""
+    try:
+        value = float(price)
+    except (TypeError, ValueError):
+        return f"${price}"
+    return f"${int(value)}" if value.is_integer() else f"${value}"
 
 
 # ── session state ─────────────────────────────────────────────────────────────
@@ -92,9 +154,45 @@ def run_agent(query: str, wardrobe: dict) -> dict:
     Before writing code, complete the Planning Loop and State Management sections
     of planning.md — your implementation should match what you described there.
     """
-    # TODO: implement the planning loop
+    # Step 1: fresh session — the single source of truth for this interaction.
     session = _new_session(query, wardrobe)
-    session["error"] = "Planning loop not yet implemented."
+
+    # Step 2: parse the query into search parameters.
+    session["parsed"] = _parse_query(query)
+    parsed = session["parsed"]
+
+    # Step 3: search, then BRANCH on the result.
+    session["search_results"] = search_listings(
+        parsed["description"], parsed["size"], parsed["max_price"]
+    )
+    if not session["search_results"]:
+        constraints = [f'"{parsed["description"] or query}"']
+        if parsed["size"]:
+            constraints.append(f"in size {parsed['size']}")
+        if parsed["max_price"] is not None:
+            constraints.append(f"under {_format_price(parsed['max_price'])}")
+        session["error"] = (
+            f"No listings matched {' '.join(constraints)}. "
+            "Try removing the size filter, raising your price ceiling, or "
+            "describing the item more broadly."
+        )
+        # Early return: do NOT call suggest_outfit or create_fit_card.
+        return session
+
+    # Step 4: select the top (best-match) result.
+    session["selected_item"] = session["search_results"][0]
+
+    # Step 5: suggest an outfit from the selected item + wardrobe.
+    session["outfit_suggestion"] = suggest_outfit(
+        session["selected_item"], session["wardrobe"]
+    )
+
+    # Step 6: turn the outfit into a shareable fit card.
+    session["fit_card"] = create_fit_card(
+        session["outfit_suggestion"], session["selected_item"]
+    )
+
+    # Step 7: return the completed session.
     return session
 
 

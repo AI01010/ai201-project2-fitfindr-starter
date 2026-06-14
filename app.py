@@ -43,8 +43,61 @@ def handle_query(user_query: str, wardrobe_choice: str) -> tuple[str, str, str]:
            string and return it along with session["outfit_suggestion"] and
            session["fit_card"].
     """
-    # TODO: implement this function
-    return "Agent not yet implemented.", "", ""
+    # 1. Guard against an empty query.
+    if not user_query or not user_query.strip():
+        return (
+            "Please enter what you're looking for "
+            "(e.g. 'vintage graphic tee under $30').",
+            "",
+            "",
+        )
+
+    # 2. Select the wardrobe based on the radio choice.
+    if wardrobe_choice == "Empty wardrobe (new user)":
+        wardrobe = get_empty_wardrobe()
+    else:
+        wardrobe = get_example_wardrobe()
+
+    # 3. Run the planning loop.
+    session = run_agent(user_query, wardrobe)
+
+    # 4. Error path — show the message in the first panel only.
+    if session["error"]:
+        return session["error"], "", ""
+
+    # 5. Happy path — format the listing and return all three panels.
+    return (
+        _format_listing(session["selected_item"]),
+        session["outfit_suggestion"],
+        session["fit_card"],
+    )
+
+
+def _format_listing(item: dict) -> str:
+    """Render the selected listing dict into readable text for the UI panel."""
+    lines = [
+        item.get("title", ""),
+        f"{_money(item.get('price'))} | {item.get('condition', '')} | "
+        f"size {item.get('size', '')}",
+        f"Platform: {item.get('platform', '')}",
+    ]
+    if item.get("brand"):
+        lines.append(f"Brand: {item['brand']}")
+    if item.get("style_tags"):
+        lines.append("Tags: " + ", ".join(item["style_tags"]))
+    if item.get("description"):
+        lines.append("")
+        lines.append(item["description"])
+    return "\n".join(lines)
+
+
+def _money(price) -> str:
+    """Format a price like $24 or $29.99."""
+    try:
+        value = float(price)
+    except (TypeError, ValueError):
+        return f"${price}"
+    return f"${int(value)}" if value.is_integer() else f"${value}"
 
 
 # ── interface ─────────────────────────────────────────────────────────────────

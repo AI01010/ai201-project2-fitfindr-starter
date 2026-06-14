@@ -66,6 +66,17 @@ def _platform_name(platform) -> str:
     return _PLATFORM_NAMES.get(str(platform or "").lower(), str(platform or "").title())
 
 
+def _format_price(price) -> str:
+    """Render a price like $24 or $29.99 (no trailing .0); fallback if missing."""
+    if price is None:
+        return "a great price"
+    try:
+        value = float(price)
+    except (TypeError, ValueError):
+        return f"${price}"
+    return f"${int(value)}" if value.is_integer() else f"${value}"
+
+
 def _format_item(item: dict) -> str:
     """Render the relevant fields of a listing dict for an LLM prompt."""
     parts = [
@@ -261,8 +272,7 @@ def create_fit_card(outfit: str, new_item: dict) -> str:
 
     client = _get_groq_client()
     title = new_item.get("title", "this piece")
-    price = new_item.get("price")
-    price_str = f"${price}" if price is not None else "a great price"
+    price_str = _format_price(new_item.get("price"))
     platform = _platform_name(new_item.get("platform"))
 
     system = (
